@@ -112,3 +112,5 @@ dmypy.json
 .pytype/
 # Cython debug symbols
 cython_debug/
+
+001 Python Programming/003 opencv/image.png
