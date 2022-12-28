@@ -114,3 +114,7 @@ dmypy.json
 cython_debug/
 
 001 Python Programming/003 opencv/image.png
+001 Python Programming/004 custom dataset/chest_xray
+
+
+001 Python Programming/004 custom dataset/datasets/batch_data.npz
