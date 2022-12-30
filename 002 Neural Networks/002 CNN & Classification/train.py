@@ -1,75 +1,109 @@
-#==========================================#
-# Title:  Data Loader
-# Author: Hwanmoo Yong
-# Date:   2021-01-17
-#==========================================#
-from data_loader import DataLoader
-from cnn_network import RoadClassificationModel
-from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau, Callback, TensorBoard
+import torch
+from torch import nn
+import torch.optim as optim
 
-import sys
+import torchvision
+import torchvision.transforms as transforms
+
+import matplotlib.pyplot as plt
 import numpy as np
 
-import os
-if not os.path.exists('./models'):
-    os.makedirs('./models')
+from torchinfo import summary
 
-data_type = "CNN"
-batch_size = 4048
+from cnn_network import model
 
-def split(flag, d):
-    train_idx = int(d.shape[0]*0.7)
-    eval_idx = int(d.shape[0]*0.9)
+# ==================================
+# configs
+# ==================================
+train_flag = False # set to True to train the model
+PATH = './cifar_net.pth'
 
-    if flag == "train":
-        return d[0:train_idx]
-    elif flag == "val":
-        return d[train_idx:eval_idx]
-    elif flag == "test":
-        return d[eval_idx:]
+# ==================================
+# train on gpu
+# ==================================
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print("Train on gpu:", device)
+print(torch.cuda.get_device_name())
 
-def main(window_size):
-    dl = DataLoader()
-    
-    # Create NPZ from csv raw dataset
-    # dl.create()
+transform = transforms.Compose(
+    [transforms.ToTensor(),
+     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-    # Load and Create windowed NPZ
-    # d = dl.read(window_size=int(window_size))
+# ==================================
+# download cifar10 dataset
+# ==================================
+batch_size = 4
 
-    # Load windowed dataset
-    d = dl.load(window_size=int(window_size))
+trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
+                                        download=True, transform=transform)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
+                                          shuffle=True, num_workers=2)
 
-    rm = RoadClassificationModel(time_window=int(window_size))
-    model = rm.build()
+testset = torchvision.datasets.CIFAR10(root='./data', train=False,
+                                       download=True, transform=transform)
+testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
+                                         shuffle=False, num_workers=2)
 
-    x_train = [
-                split("train",d['ba']).reshape(-1,int(window_size),1),
-                split("train",d['u']),
-                split("train",d['K_seq'])
-            ]
-    y_train = [split("train",d['a']),split("train",d['K'])]
+classes = ('plane', 'car', 'bird', 'cat',
+           'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-    x_val = [
-                split("val",d['ba']).reshape(-1,int(window_size),1),
-                split("val",d['tire_stft']).reshape(-1,25,21,1),
-                split("val",d['K_seq'])
-            ]
-    y_val = [split("val",d['a']),split("val",d['K'])]
+# ==================================
+# set criterion and optimizer
+# ==================================
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+# optimizer = optim.Adam([{'params': last_params, 'lr': 1e-3},
+#                         {'params': intermediate_params, 'lr': 1e-3}])
 
-    if not os.path.exists('./models/'+sys.argv[2] + '_'  +  data_type):
-        os.makedirs('./models/'+sys.argv[2] + '_'  +  data_type)
+model = model.to(device) # load model to gpu
+if train_flag:
+    for epoch in range(10):  # loop over the dataset multiple times
+        running_loss = 0.0
+        for i, data in enumerate(trainloader, 0):
+            # get the inputs; data is a list of [inputs, labels]
+            inputs, labels = data
+            # change data: inputs and labels tenosrs to cuda
+            inputs = inputs.to(device)
+            labels = labels.to(device)
 
-    earlyStopping = EarlyStopping(monitor='val_loss', patience=21, verbose=0, mode='min')
-    checkpointer = ModelCheckpoint(monitor='val_loss', filepath='./models/'+sys.argv[2] + '_' + data_type+'/{epoch:02d}-{val_loss:.2f}.hdf5', verbose=1, save_best_only=True)
-    rl_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.05, patience=10, verbose=1, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
-    csv_logger = CSVLogger('./models/'+sys.argv[2] + '_'  +  data_type+'/result.csv')
+            # zero the parameter gradients
+            optimizer.zero_grad()
 
-    model.fit(x_train, y_train,
-            batch_size=batch_size, epochs=10000,
-            validation_data=(x_val, y_val),
-            shuffle=True,
-            callbacks=[earlyStopping, checkpointer, rl_scheduler, csv_logger])
+            # forward + backward + optimize
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-if __name__=="__main__":
-    main(sys.argv[1])
+            # print statistics
+            running_loss += loss.item()
+            if i % 500 == 499:    # print every 500 mini-batches (batch size: 4 from dataloader)
+                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 500:.3f}')
+                running_loss = 0.0
+    # ==================================
+    # save our trained data 
+    # ==================================
+    torch.save(model.state_dict(), PATH)
+    print('Finished Training')
+
+model.load_state_dict(torch.load(PATH))
+# ==================================
+# evaluate our model
+# ==================================
+correct = 0
+total = 0
+# since we're not training, we don't need to calculate the gradients for our outputs
+with torch.no_grad():
+    for data in testloader:
+        images, labels = data
+        images = images.to(device)
+        labels = labels.to(device)
+        # calculate outputs by running images through the network
+        outputs = model(images)
+        # the class with the highest energy is what we choose as prediction
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+print(f'Accuracy of the network on the 10000 test images: {100 * correct / total} %')
+# Accuracy of the network on the 10000 test images: 80.0 %
